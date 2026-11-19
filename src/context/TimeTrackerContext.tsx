@@ -9,7 +9,7 @@ import {
   saveSettings,
   parseTags
 } from '../services/storage';
-import { syncEntriesToGoogleSheets } from '../services/googleSheets';
+import { syncEntriesToGoogleSheets, pullEntriesFromGoogleSheets } from '../services/googleSheets';
 
 interface TimeTrackerContextType {
   entries: TotemEntry[];
@@ -38,6 +38,7 @@ interface TimeTrackerContextType {
   deleteEntry: (id: string) => void;
   updateEntry: (id: string, updates: Partial<TotemEntry>) => void;
   triggerSync: () => Promise<void>;
+  pullFromSheet: (customUrl?: string) => Promise<void>;
   updateAppSettings: (newSettings: AppSettings) => void;
 }
 
@@ -94,7 +95,37 @@ export const TimeTrackerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return entries.filter(e => e.syncStatus !== 'synced').length;
   }, [entries]);
 
-  // Sync entries to Google Sheets
+  // Pull existing entries from Google Sheets
+  const pullFromSheet = useCallback(async (customUrl?: string) => {
+    const targetUrl = customUrl || settings.googleWebAppUrl;
+    if (!targetUrl) return;
+
+    setIsSyncing(true);
+    setSyncError(null);
+
+    const res = await pullEntriesFromGoogleSheets(targetUrl);
+    setIsSyncing(false);
+
+    if (res.success && res.entries.length > 0) {
+      setEntries(prev => {
+        // If local has only seed entries, replace them with real sheet entries
+        const isFresh = prev.length === 0 || prev.every(e => e.id.startsWith('seed-totem-'));
+        if (isFresh) {
+          return res.entries;
+        }
+
+        // Merge: keep local, add sheet entries if not already present
+        const localIds = new Set(prev.map(e => e.id));
+        const newFromSheet = res.entries.filter(e => !localIds.has(e.id));
+        return [...newFromSheet, ...prev];
+      });
+      setLastSyncedTimestamp(new Date().toISOString());
+    } else if (!res.success && res.message) {
+      setSyncError(res.message);
+    }
+  }, [settings.googleWebAppUrl]);
+
+  // Sync pending local entries to Google Sheets
   const triggerSync = useCallback(async () => {
     if (!settings.googleWebAppUrl) {
       setSyncError('Google Sheets Web App URL is not configured. Add it in Settings.');
@@ -103,7 +134,8 @@ export const TimeTrackerProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     const toSync = entries.filter(e => e.syncStatus !== 'synced');
     if (toSync.length === 0) {
-      setSyncError(null);
+      // Nothing pending to push, but let's do a pull to fetch anything from other devices
+      pullFromSheet();
       return;
     }
 
@@ -134,7 +166,31 @@ export const TimeTrackerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         )
       );
     }
-  }, [entries, settings.googleWebAppUrl]);
+  }, [entries, settings.googleWebAppUrl, pullFromSheet]);
+
+  // Auto-import settings & pull if URL has ?syncUrl=...
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlParam = params.get('syncUrl');
+      if (urlParam && urlParam.startsWith('https://script.google.com/macros/s/')) {
+        const decoded = decodeURIComponent(urlParam);
+        setSettings(prev => {
+          const updated = { ...prev, googleWebAppUrl: decoded };
+          saveSettings(updated);
+          return updated;
+        });
+
+        // Clean the query string without reloading page
+        window.history.replaceState({}, document.title, window.location.pathname);
+
+        // Pull entries from Google Sheet immediately
+        pullFromSheet(decoded);
+      }
+    } catch (e) {
+      console.error('Error reading syncUrl param', e);
+    }
+  }, [pullFromSheet]);
 
   // Auto-sync after changes if enabled
   const scheduleAutoSync = useCallback(() => {
@@ -309,6 +365,7 @@ export const TimeTrackerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         deleteEntry,
         updateEntry,
         triggerSync,
+        pullFromSheet,
         updateAppSettings,
       }}
     >

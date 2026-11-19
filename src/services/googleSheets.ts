@@ -18,19 +18,57 @@ export const GOOGLE_APPS_SCRIPT_TEMPLATE = `/**
 
 const SHEET_NAME = 'Tiki-Toki Log';
 
+function readSheetEntries(sheet) {
+  const entries = [];
+  if (!sheet) return entries;
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return entries;
+
+  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    const syncId = String(row[0] || '').trim();
+    if (!syncId) continue;
+
+    const loggedAt = row[10] ? String(row[10]) : new Date().toISOString();
+    const duration = Number(row[4]) || 0;
+
+    entries.push({
+      id: syncId,
+      title: String(row[6] || 'Untitled'),
+      classification: String(row[5] || 'productive').toLowerCase(),
+      tags: row[7] ? String(row[7]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [],
+      startTime: loggedAt,
+      endTime: loggedAt,
+      durationMinutes: duration,
+      mode: String(row[8] || 'live'),
+      notes: String(row[9] || ''),
+      syncStatus: 'synced',
+      lastSyncedAt: loggedAt
+    });
+  }
+  return entries;
+}
+
 function doGet(e) {
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName(SHEET_NAME);
+    const entries = readSheetEntries(sheet);
+
     return ContentService.createTextOutput(JSON.stringify({
       status: 'ok',
       message: 'Tiki-Toki bridge is live and connected!',
       sheetTitle: ss.getName(),
+      entries: entries,
+      entriesCount: entries.length,
       timestamp: new Date().toISOString()
     })).setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({
       status: 'ok',
       message: 'Tiki-Toki bridge is live and ready',
+      entries: [],
       timestamp: new Date().toISOString()
     })).setMimeType(ContentService.MimeType.JSON);
   }
@@ -82,6 +120,15 @@ function doPost(e) {
       return ContentService.createTextOutput(JSON.stringify({
         status: 'success',
         message: 'Tiki-Toki connected successfully!'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (data.action === 'pull_entries') {
+      const entries = readSheetEntries(sheet);
+      return ContentService.createTextOutput(JSON.stringify({
+        status: 'success',
+        entries: entries,
+        entriesCount: entries.length
       })).setMimeType(ContentService.MimeType.JSON);
     }
 
@@ -237,6 +284,52 @@ export async function testGoogleSheetsConnection(url: string): Promise<{ success
     success: false,
     message: 'Could not verify connection. Please ensure your deployment is published as a Web App.',
   };
+}
+
+export async function pullEntriesFromGoogleSheets(
+  url: string
+): Promise<{ success: boolean; entries: TotemEntry[]; message?: string }> {
+  const cleanUrl = (url || '').trim();
+  if (!cleanUrl) {
+    return { success: false, entries: [], message: 'No Google Sheets URL configured.' };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const response = await fetch(cleanUrl, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (data.status === 'ok' && Array.isArray(data.entries)) {
+      return {
+        success: true,
+        entries: data.entries,
+        message: `Retrieved ${data.entries.length} totems from Google Sheet.`,
+      };
+    }
+
+    return {
+      success: true,
+      entries: [],
+      message: 'Connected, but no entries found in the sheet.',
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      entries: [],
+      message: err.message || 'Failed to pull entries from Google Sheet',
+    };
+  }
 }
 
 export async function syncEntriesToGoogleSheets(

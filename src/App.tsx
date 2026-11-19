@@ -7,11 +7,13 @@ import { StatsBar } from './components/StatsBar';
 import { TheRiver } from './components/TheRiver';
 import { RetroactiveModal } from './components/RetroactiveModal';
 import { SettingsModal } from './components/SettingsModal';
+import { MobileConnectModal } from './components/MobileConnectModal';
 
 const AppContent: React.FC = () => {
   const { activeTimer, pauseTimer, resumeTimer, stopAndSaveTimer } = useTimeTracker();
   const [isRetroactiveOpen, setIsRetroactiveOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isMobileConnectOpen, setIsMobileConnectOpen] = useState(false);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -30,18 +32,19 @@ const AppContent: React.FC = () => {
       if (e.key === 'Escape') {
         setIsRetroactiveOpen(false);
         setIsSettingsOpen(false);
+        setIsMobileConnectOpen(false);
         return;
       }
 
       // Open retroactive modal on 'r' or 'R'
-      if ((e.key === 'r' || e.key === 'R') && !isRetroactiveOpen && !isSettingsOpen) {
+      if ((e.key === 'r' || e.key === 'R') && !isRetroactiveOpen && !isSettingsOpen && !isMobileConnectOpen) {
         e.preventDefault();
         setIsRetroactiveOpen(true);
         return;
       }
 
       // Space to pause / resume active timer
-      if (e.code === 'Space' && activeTimer && !isRetroactiveOpen && !isSettingsOpen) {
+      if (e.code === 'Space' && activeTimer && !isRetroactiveOpen && !isSettingsOpen && !isMobileConnectOpen) {
         e.preventDefault();
         if (activeTimer.isPaused) {
           resumeTimer();
@@ -52,7 +55,7 @@ const AppContent: React.FC = () => {
       }
 
       // Enter to drop & complete active totem
-      if (e.key === 'Enter' && activeTimer && !isRetroactiveOpen && !isSettingsOpen) {
+      if (e.key === 'Enter' && activeTimer && !isRetroactiveOpen && !isSettingsOpen && !isMobileConnectOpen) {
         e.preventDefault();
         stopAndSaveTimer();
         return;
@@ -61,7 +64,7 @@ const AppContent: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTimer, isRetroactiveOpen, isSettingsOpen, pauseTimer, resumeTimer, stopAndSaveTimer]);
+  }, [activeTimer, isRetroactiveOpen, isSettingsOpen, isMobileConnectOpen, pauseTimer, resumeTimer, stopAndSaveTimer]);
 
   return (
     <div className="min-h-screen bg-[#0a0e14] text-slate-100 flex flex-col antialiased selection:bg-toki-600 selection:text-white">
@@ -70,6 +73,7 @@ const AppContent: React.FC = () => {
       <Header
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenRetroactive={() => setIsRetroactiveOpen(true)}
+        onOpenMobileConnect={() => setIsMobileConnectOpen(true)}
       />
 
       {/* Main Body */}
@@ -112,6 +116,12 @@ const AppContent: React.FC = () => {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        onOpenMobileConnect={() => setIsMobileConnectOpen(true)}
+      />
+
+      <MobileConnectModal
+        isOpen={isMobileConnectOpen}
+        onClose={() => setIsMobileConnectOpen(false)}
       />
 
     </div>

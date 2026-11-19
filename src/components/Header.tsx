@@ -1,13 +1,18 @@
 import React from 'react';
 import { useTimeTracker } from '../context/TimeTrackerContext';
-import { Cloud, CloudOff, RefreshCw, Settings as SettingsIcon, PlusCircle, AlertCircle, Clock } from 'lucide-react';
+import { Cloud, CloudOff, RefreshCw, Settings as SettingsIcon, Clock, AlertCircle, Smartphone } from 'lucide-react';
 
 interface HeaderProps {
   onOpenSettings: () => void;
   onOpenRetroactive: () => void;
+  onOpenMobileConnect: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ onOpenSettings, onOpenRetroactive }) => {
+export const Header: React.FC<HeaderProps> = ({
+  onOpenSettings,
+  onOpenRetroactive,
+  onOpenMobileConnect,
+}) => {
   const {
     settings,
     isSyncing,
@@ -44,17 +49,27 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings, onOpenRetroactiv
         </div>
 
         {/* Action Controls */}
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-2 sm:gap-2.5">
           
+          {/* Mobile Connect Button */}
+          <button
+            onClick={onOpenMobileConnect}
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-toki-950/70 hover:bg-toki-900/80 text-toki-300 border border-toki-800/80 transition-all active:scale-95"
+            title="Access on Phone (QR Code & LAN)"
+          >
+            <Smartphone className="w-3.5 h-3.5 text-toki-400" />
+            <span className="hidden xs:inline">Phone Sync</span>
+          </button>
+
           {/* Quick Retroactive Button */}
           <button
             onClick={onOpenRetroactive}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-tiki-card hover:bg-slate-800 text-slate-200 border border-tiki-border transition-all active:scale-95"
+            className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium bg-tiki-card hover:bg-slate-800 text-slate-200 border border-tiki-border transition-all active:scale-95"
             title="Log past time block (Shortcut: R)"
           >
             <Clock className="w-3.5 h-3.5 text-toki-400" />
-            <span className="hidden xs:inline">Log Past</span>
-            <span className="hidden sm:inline font-mono text-[10px] bg-slate-900 px-1 py-0.5 rounded border border-slate-700">R</span>
+            <span className="hidden sm:inline">Log Past</span>
+            <span className="hidden md:inline font-mono text-[10px] bg-slate-900 px-1 py-0.5 rounded border border-slate-700">R</span>
           </button>
 
           {/* Sync Status Button */}
@@ -62,7 +77,7 @@ export const Header: React.FC<HeaderProps> = ({ onOpenSettings, onOpenRetroactiv
             <button
               onClick={() => triggerSync()}
               disabled={isSyncing}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all active:scale-95 ${
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-medium border transition-all active:scale-95 ${
                 isSyncing
                   ? 'bg-toki-950/80 border-toki-700 text-toki-300'
                   : syncError

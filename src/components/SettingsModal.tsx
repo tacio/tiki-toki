@@ -17,20 +17,28 @@ import {
   HelpCircle,
   Command,
   Save,
-  CheckCircle2
+  CheckCircle2,
+  Smartphone,
+  CloudDownload
 } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpenMobileConnect?: () => void;
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
-  const { settings, updateAppSettings, entries, triggerSync } = useTimeTracker();
+export const SettingsModal: React.FC<SettingsModalProps> = ({
+  isOpen,
+  onClose,
+  onOpenMobileConnect,
+}) => {
+  const { settings, updateAppSettings, entries, triggerSync, pullFromSheet, isSyncing } = useTimeTracker();
 
   const [webAppUrl, setWebAppUrl] = useState(settings.googleWebAppUrl || '');
   const [autoSync, setAutoSync] = useState(settings.autoSync);
   const [testingConnection, setTestingConnection] = useState(false);
+  const [pullingCloud, setPullingCloud] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
   const [showScriptDrawer, setShowScriptDrawer] = useState(false);
@@ -59,6 +67,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     const res = await testGoogleSheetsConnection(webAppUrl.trim());
     setTestingConnection(false);
     setTestResult(res);
+  };
+
+  const handlePullFromSheet = async () => {
+    if (!webAppUrl.trim()) return;
+    setPullingCloud(true);
+    await pullFromSheet(webAppUrl.trim());
+    setPullingCloud(false);
+    setTestResult({
+      success: true,
+      message: 'Pulled latest totems from Google Spreadsheet into local ledger!',
+    });
   };
 
   const handleSaveSettings = () => {
@@ -158,7 +177,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 <li>In Google Sheets menu, click <strong className="text-slate-200">Extensions &gt; Apps Script</strong></li>
                 <li>Replace whatever is there with the script below, and click <strong className="text-slate-200">Save</strong> (disk icon)</li>
                 <li>Click <strong className="text-slate-200">Deploy &gt; New deployment</strong>, select type <strong className="text-slate-200">Web app</strong></li>
-                <li>Set <strong className="text-slate-200">Execute as: Me</strong> and <strong className="text-slate-200">Who has access: Anyone</strong></li>
+                <li>Set <strong className="text-slate-200">Execute as: Me</strong> and <strong className="text-slate-200">Who has access: Anyone</strong> (CRITICAL)</li>
                 <li>Click <strong className="text-slate-200">Deploy</strong>. When asked to authorize:
                   <div className="my-1.5 ml-4 p-2.5 rounded-lg bg-amber-950/40 border border-amber-800/60 text-amber-200 text-[11px] space-y-1">
                     <p className="font-semibold text-amber-300">⚠️ If Google says "Google hasn't verified this app":</p>
@@ -203,19 +222,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 className="flex-1 px-3.5 py-2.5 text-xs rounded-xl bg-slate-950 border border-slate-700 text-white placeholder-slate-600 font-mono focus:outline-none focus:border-toki-500"
               />
 
-              <button
-                type="button"
-                onClick={handleTestConnection}
-                disabled={testingConnection || !webAppUrl.trim()}
-                className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center justify-center gap-1.5 shrink-0 transition-all disabled:opacity-50"
-              >
-                {testingConnection ? (
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-toki-400" />
-                ) : (
-                  <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
-                )}
-                <span>Test Connection</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleTestConnection}
+                  disabled={testingConnection || !webAppUrl.trim()}
+                  className="px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center justify-center gap-1.5 shrink-0 transition-all disabled:opacity-50"
+                  title="Test GET/POST ping"
+                >
+                  {testingConnection ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-toki-400" />
+                  ) : (
+                    <ExternalLink className="w-3.5 h-3.5 text-slate-400" />
+                  )}
+                  <span>Test Ping</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handlePullFromSheet}
+                  disabled={pullingCloud || !webAppUrl.trim()}
+                  className="px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-800/80 flex items-center justify-center gap-1.5 shrink-0 transition-all disabled:opacity-50"
+                  title="Pull all existing totems from Google Sheet"
+                >
+                  <CloudDownload className={`w-3.5 h-3.5 ${pullingCloud ? 'animate-bounce' : 'text-emerald-400'}`} />
+                  <span>Pull Sheet Data</span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -258,7 +291,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
         </div>
 
-        {/* SECTION 2: Data Backup & Exports */}
+        {/* SECTION 2: Mobile Access & QR Code */}
+        {onOpenMobileConnect && (
+          <div className="rounded-xl bg-toki-950/40 border border-toki-900/50 p-4 sm:p-5 flex items-center justify-between">
+            <div className="space-y-0.5">
+              <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                <Smartphone className="w-4 h-4 text-toki-400" />
+                <span>Connect Phone (Same Wi-Fi)</span>
+              </h4>
+              <p className="text-xs text-slate-400">
+                Scan QR code to open Tiki-Toki on your phone with settings pre-configured
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenMobileConnect();
+              }}
+              className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-toki-600 hover:bg-toki-500 text-white shadow-md shadow-toki-950 transition-all active:scale-95 flex items-center gap-1.5"
+            >
+              <span>Show QR Code</span>
+            </button>
+          </div>
+        )}
+
+        {/* SECTION 3: Data Backup & Exports */}
         <div className="space-y-3 rounded-xl bg-slate-900/70 border border-slate-800 p-4 sm:p-5">
           <div>
             <h4 className="text-sm font-bold text-white flex items-center gap-2">
@@ -291,7 +350,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           </div>
         </div>
 
-        {/* SECTION 3: Keyboard Shortcuts Cheatsheet */}
+        {/* SECTION 4: Keyboard Shortcuts Cheatsheet */}
         <div className="rounded-xl bg-slate-900/50 border border-slate-800/80 p-4 text-xs space-y-2">
           <div className="font-semibold text-slate-300 flex items-center gap-1.5">
             <Command className="w-3.5 h-3.5 text-toki-400" />
