@@ -11,7 +11,7 @@ export const GOOGLE_APPS_SCRIPT_TEMPLATE = `/**
  * 5. Select type: "Web app"
  * 6. Set Description: "Tiki-Toki Bridge"
  * 7. Set "Execute as": "Me"
- * 8. Set "Who has access": "Anyone" (allows your app to push logs directly)
+ * 8. Set "Who has access": "Anyone" (CRITICAL: prevents redirect to login)
  * 9. Click "Deploy", authorize permissions, and copy the Web app URL (ends in /exec).
  * 10. Paste that URL into Tiki-Toki Settings!
  */
@@ -19,17 +19,34 @@ export const GOOGLE_APPS_SCRIPT_TEMPLATE = `/**
 const SHEET_NAME = 'Tiki-Toki Log';
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({
-    status: 'ok',
-    message: 'Tiki-Toki bridge is live and ready',
-    timestamp: new Date().toISOString()
-  })).setMimeType(ContentService.MimeType.JSON);
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    return ContentService.createTextOutput(JSON.stringify({
+      status: 'ok',
+      message: 'Tiki-Toki bridge is live and connected!',
+      sheetTitle: ss.getName(),
+      timestamp: new Date().toISOString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({
+      status: 'ok',
+      message: 'Tiki-Toki bridge is live and ready',
+      timestamp: new Date().toISOString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
 }
 
 function doPost(e) {
+  const lock = LockService.getScriptLock();
   try {
-    const lock = LockService.getScriptLock();
     lock.waitLock(10000); // 10s wait lock for concurrency safety
+
+    if (!e || !e.postData || !e.postData.contents) {
+      return ContentService.createTextOutput(JSON.stringify({
+        status: 'error',
+        message: 'No payload received in request'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
 
     const data = JSON.parse(e.postData.contents);
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -62,7 +79,6 @@ function doPost(e) {
     }
 
     if (data.action === 'ping') {
-      lock.releaseLock();
       return ContentService.createTextOutput(JSON.stringify({
         status: 'success',
         message: 'Tiki-Toki connected successfully!'
@@ -114,8 +130,6 @@ function doPost(e) {
       syncedIds.push(entry.id);
     }
 
-    lock.releaseLock();
-
     return ContentService.createTextOutput(JSON.stringify({
       status: 'success',
       syncedCount: syncedIds.length,
@@ -127,52 +141,110 @@ function doPost(e) {
       status: 'error',
       message: err.toString()
     })).setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (e) {
+      // Lock already released or expired
+    }
   }
 }
 `;
 
 export async function testGoogleSheetsConnection(url: string): Promise<{ success: boolean; message: string }> {
-  if (!url || !url.startsWith('https://script.google.com/macros/s/')) {
+  const cleanUrl = (url || '').trim();
+
+  if (!cleanUrl || !cleanUrl.startsWith('https://script.google.com/macros/s/')) {
     return {
       success: false,
-      message: 'Invalid URL. It must be a Google Apps Script Web App URL starting with https://script.google.com/macros/s/'
+      message: 'Invalid URL. It must be a Google Apps Script Web App URL starting with https://script.google.com/macros/s/',
     };
   }
 
+  if (cleanUrl.endsWith('/dev')) {
+    return {
+      success: false,
+      message: 'This is a test URL ending in /dev. You must use the published Web App URL ending in /exec.',
+    };
+  }
+
+  // 1. Try GET request with an 8-second timeout (tests doGet cleanly without CORS/redirect issues)
   try {
-    const payload = JSON.stringify({ action: 'ping' });
-    const response = await fetch(url, {
-      method: 'POST',
-      body: payload,
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8',
-      },
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    const response = await fetch(cleanUrl, {
+      method: 'GET',
       redirect: 'follow',
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
-    if (!response.ok) {
-      throw new Error(`Server returned status ${response.status}`);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.status === 'ok' || data.status === 'success') {
+        const extra = data.sheetTitle ? ` ("${data.sheetTitle}")` : '';
+        return {
+          success: true,
+          message: `Connected to Google Sheets successfully${extra}!`,
+        };
+      }
+    }
+  } catch (getError: any) {
+    // If GET failed with timeout
+    if (getError.name === 'AbortError') {
+      return {
+        success: false,
+        message:
+          'Connection timed out (8s). The most common cause is setting "Who has access" to "Only myself" instead of "Anyone", causing Google to redirect to a login screen. In Apps Script, click Deploy > Manage deployments > Edit > set "Who has access: Anyone".',
+      };
     }
 
-    const data = await response.json();
-    if (data.status === 'success' || data.status === 'ok') {
-      return { success: true, message: data.message || 'Connected to Google Sheets successfully!' };
-    } else {
-      return { success: false, message: data.message || 'Unknown response format from Google Apps Script' };
+    // 2. Fallback: try POST ping with an 8-second timeout
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+      const postResponse = await fetch(cleanUrl, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'ping' }),
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8',
+        },
+        redirect: 'follow',
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (postResponse.ok) {
+        const postData = await postResponse.json();
+        return {
+          success: true,
+          message: postData.message || 'Connected to Google Sheets successfully!',
+        };
+      }
+    } catch (postError: any) {
+      // Both failed
     }
-  } catch (error: any) {
+
     return {
       success: false,
-      message: error.message || 'Could not connect to Google Apps Script. Please verify the URL and deployment settings.'
+      message: `Could not connect to Google Apps Script (${getError.message || 'Network error'}). Please verify the URL ends in /exec and "Who has access" is set to "Anyone".`,
     };
   }
+
+  return {
+    success: false,
+    message: 'Could not verify connection. Please ensure your deployment is published as a Web App.',
+  };
 }
 
 export async function syncEntriesToGoogleSheets(
   url: string,
   entries: TotemEntry[]
 ): Promise<{ success: boolean; syncedIds: string[]; error?: string }> {
-  if (!url || entries.length === 0) {
+  const cleanUrl = (url || '').trim();
+  if (!cleanUrl || entries.length === 0) {
     return { success: true, syncedIds: [] };
   }
 
@@ -192,14 +264,19 @@ export async function syncEntriesToGoogleSheets(
       })),
     });
 
-    const response = await fetch(url, {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    const response = await fetch(cleanUrl, {
       method: 'POST',
       body: payload,
       headers: {
         'Content-Type': 'text/plain;charset=utf-8',
       },
       redirect: 'follow',
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: Failed to reach Google Sheets`);
@@ -216,6 +293,13 @@ export async function syncEntriesToGoogleSheets(
       };
     }
   } catch (err: any) {
+    if (err.name === 'AbortError') {
+      return {
+        success: false,
+        syncedIds: [],
+        error: 'Sync timed out (15s). Please check your connection or Apps Script deployment.',
+      };
+    }
     return {
       success: false,
       syncedIds: [],
