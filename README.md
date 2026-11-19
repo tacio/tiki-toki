@@ -75,8 +75,14 @@ To access it on your phone, open `http://<YOUR_LOCAL_IP>:5173` while on the same
    * Description: `Tiki-Toki Bridge`
    * Execute as: **Me**
    * Who has access: **Anyone**
-6. Click **Deploy**, grant permissions, and copy the Web app URL (ends in `/exec`).
-7. Paste the URL into Tiki-Toki Settings and click **Save Configuration**!
+6. Click **Deploy**, then click **Authorize access**.
+   > **Note on "Google hasn’t verified this app":**
+   > Google displays this standard warning for any private Apps Script you write. Because this is your own script running on your own Google account, it is 100% safe.
+   > 1. Click the small **"Advanced"** link (bottom-left of the warning popup).
+   > 2. Click **"Go to Tiki-Toki Bridge (unsafe)"** (or "Go to Untitled project (unsafe)").
+   > 3. Click **"Allow"**.
+7. Copy the generated Web app URL (ends in `/exec`).
+8. Paste the URL into Tiki-Toki Settings and click **Save Configuration**!
 
 From then on, every totem and time sink you record will automatically sync to your personal Google Sheet!
 

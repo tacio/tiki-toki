@@ -156,10 +156,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               <ol className="list-decimal list-inside space-y-1.5 text-slate-400 leading-relaxed">
                 <li>Create a new spreadsheet at <a href="https://sheets.new" target="_blank" rel="noreferrer" className="text-toki-400 underline inline-flex items-center gap-0.5">sheets.new <ExternalLink className="w-2.5 h-2.5" /></a></li>
                 <li>In Google Sheets menu, click <strong className="text-slate-200">Extensions &gt; Apps Script</strong></li>
-                <li>Replace whatever is there with the script below, and click <strong className="text-slate-200">Save</strong></li>
-                <li>Click <strong className="text-slate-200">Deploy &gt; New deployment</strong>, choose type <strong className="text-slate-200">Web app</strong></li>
+                <li>Replace whatever is there with the script below, and click <strong className="text-slate-200">Save</strong> (disk icon)</li>
+                <li>Click <strong className="text-slate-200">Deploy &gt; New deployment</strong>, select type <strong className="text-slate-200">Web app</strong></li>
                 <li>Set <strong className="text-slate-200">Execute as: Me</strong> and <strong className="text-slate-200">Who has access: Anyone</strong></li>
-                <li>Authorize permissions, copy the Web app URL (ends in <code className="text-amber-300">/exec</code>), and paste it below!</li>
+                <li>Click <strong className="text-slate-200">Deploy</strong>. When asked to authorize:
+                  <div className="my-1.5 ml-4 p-2.5 rounded-lg bg-amber-950/40 border border-amber-800/60 text-amber-200 text-[11px] space-y-1">
+                    <p className="font-semibold text-amber-300">⚠️ If Google says "Google hasn't verified this app":</p>
+                    <p>1. Click <strong className="text-white">"Advanced"</strong> (small link at bottom-left).</p>
+                    <p>2. Click <strong className="text-white">"Go to Untitled project / Tiki-Toki Bridge (unsafe)"</strong>.</p>
+                    <p>3. Click <strong className="text-white">"Allow"</strong>.</p>
+                    <p className="text-slate-400 text-[10px] italic">(Google shows this for all personal scripts that access sheets. It is your own private script running on your own account.)</p>
+                  </div>
+                </li>
+                <li>Copy the Web app URL (ends in <code className="text-amber-300">/exec</code>), paste it into the field below, and click <strong className="text-slate-200">Save Configuration</strong>!</li>
               </ol>
 
               <div className="flex items-center justify-between pt-2">
