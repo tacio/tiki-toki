@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background-color: #0c1017;
+  color: #f1f5f9;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Custom subtle scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0f141c;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #222d3d;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Arcane pulsing ring animation for active Toki timer */
+@keyframes arcane-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes totem-pulse {
+  0%, 100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.015);
+  }
+}
+
+.animate-arcane-slow {
+  animation: arcane-spin 30s linear infinite;
+}
+
+.animate-totem-pulse {
+  animation: totem-pulse 3s ease-in-out infinite;
+}
+
+/* Safe area support for mobile PWA bottom bars and notches */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 1rem);
+}

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <defs>
+    <linearGradient id="tokiGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7c61f7" />
+      <stop offset="100%" stop-color="#3d2093" />
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b" />
+      <stop offset="100%" stop-color="#c99a5e" />
+    </linearGradient>
+  </defs>
+  <!-- Background Shield/Stone -->
+  <rect width="100" height="100" rx="24" fill="#161d28" />
+  <rect x="2" y="2" width="96" height="96" rx="22" stroke="#222d3d" stroke-width="2" />
+  
+  <!-- Outer Arcane Clock Ring -->
+  <circle cx="50" cy="50" r="38" stroke="url(#tokiGrad)" stroke-width="3" stroke-dasharray="4 6" opacity="0.8" />
+  <circle cx="50" cy="50" r="32" stroke="#222d3d" stroke-width="1.5" />
+  
+  <!-- Carved Tiki Totem Centerpiece -->
+  <path d="M42 26 H58 L54 36 H46 Z" fill="url(#goldGrad)" />
+  <!-- Totem Eye Slots -->
+  <rect x="44" y="42" width="4" height="6" rx="1.5" fill="#7c61f7" />
+  <rect x="52" y="42" width="4" height="6" rx="1.5" fill="#7c61f7" />
+  <!-- Totem Main Body -->
+  <path d="M40 38 H60 C60 48 58 56 50 62 C42 56 40 48 40 38 Z" stroke="url(#goldGrad)" stroke-width="2.5" fill="#0f141c" />
+  <!-- Totem Carved Mouth / River Line -->
+  <path d="M45 52 Q50 56 55 52" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" fill="none" />
+  <!-- Lower Stone Anchor / Pedestal -->
+  <path d="M42 66 H58 L55 74 H45 Z" fill="#222d3d" stroke="url(#tokiGrad)" stroke-width="1.5" />
+</svg>
