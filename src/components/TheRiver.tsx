@@ -6,15 +6,9 @@ import {
   Wrench,
   AlertTriangle,
   Search,
-  Tag,
   Trash2,
   Edit2,
-  Check,
   Cloud,
-  Clock,
-  Sparkles,
-  Filter,
-  CheckCircle2,
   X
 } from 'lucide-react';
 

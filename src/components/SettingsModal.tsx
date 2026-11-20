@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { useTimeTracker } from '../context/TimeTrackerContext';
 import {
   GOOGLE_APPS_SCRIPT_TEMPLATE,
-  testGoogleSheetsConnection
+  testGoogleSheetsConnection,
+  isValidWebAppUrl,
 } from '../services/googleSheets';
 import { exportEntriesToCSV, exportEntriesToJSON } from '../services/storage';
 import {
@@ -19,7 +20,10 @@ import {
   Save,
   CheckCircle2,
   Smartphone,
-  CloudDownload
+  CloudDownload,
+  KeyRound,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -33,9 +37,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   onOpenMobileConnect,
 }) => {
-  const { settings, updateAppSettings, entries, triggerSync, pullFromSheet, isSyncing } = useTimeTracker();
+  const { settings, updateAppSettings, entries, pullFromSheet } = useTimeTracker();
 
   const [webAppUrl, setWebAppUrl] = useState(settings.googleWebAppUrl || '');
+  const [bridgeToken, setBridgeToken] = useState(settings.googleBridgeToken || '');
+  const [showToken, setShowToken] = useState(false);
   const [autoSync, setAutoSync] = useState(settings.autoSync);
   const [testingConnection, setTestingConnection] = useState(false);
   const [pullingCloud, setPullingCloud] = useState(false);
@@ -45,6 +51,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   if (!isOpen) return null;
+
+  const creds = { url: webAppUrl.trim(), token: bridgeToken.trim() };
+  const urlLooksInvalid = creds.url !== '' && !isValidWebAppUrl(creds.url);
 
   const handleCopyScript = () => {
     navigator.clipboard.writeText(GOOGLE_APPS_SCRIPT_TEMPLATE);
@@ -64,15 +73,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setTestingConnection(true);
     setTestResult(null);
 
-    const res = await testGoogleSheetsConnection(webAppUrl.trim());
+    const res = await testGoogleSheetsConnection(creds);
     setTestingConnection(false);
     setTestResult(res);
   };
 
   const handlePullFromSheet = async () => {
-    if (!webAppUrl.trim()) return;
+    if (!creds.url || !creds.token) return;
     setPullingCloud(true);
-    await pullFromSheet(webAppUrl.trim());
+    await pullFromSheet(creds);
     setPullingCloud(false);
     setTestResult({
       success: true,
@@ -83,7 +92,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleSaveSettings = () => {
     updateAppSettings({
       ...settings,
-      googleWebAppUrl: webAppUrl.trim(),
+      googleWebAppUrl: creds.url,
+      googleBridgeToken: creds.token,
       autoSync,
     });
     setSavedSuccess(true);
@@ -176,8 +186,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <li>Create a new spreadsheet at <a href="https://sheets.new" target="_blank" rel="noreferrer" className="text-toki-400 underline inline-flex items-center gap-0.5">sheets.new <ExternalLink className="w-2.5 h-2.5" /></a></li>
                 <li>In Google Sheets menu, click <strong className="text-slate-200">Extensions &gt; Apps Script</strong></li>
                 <li>Replace whatever is there with the script below, and click <strong className="text-slate-200">Save</strong> (disk icon)</li>
+                <li>In the function dropdown at the top pick <strong className="text-slate-200">setupToken</strong> and click <strong className="text-slate-200">Run</strong>. Copy the token from the <strong className="text-slate-200">Execution log</strong>; this is your secret bridge token.</li>
                 <li>Click <strong className="text-slate-200">Deploy &gt; New deployment</strong>, select type <strong className="text-slate-200">Web app</strong></li>
-                <li>Set <strong className="text-slate-200">Execute as: Me</strong> and <strong className="text-slate-200">Who has access: Anyone</strong> (CRITICAL)</li>
+                <li>Set <strong className="text-slate-200">Execute as: Me</strong> and <strong className="text-slate-200">Who has access: Anyone</strong> (required; every request is still checked against your token)</li>
                 <li>Click <strong className="text-slate-200">Deploy</strong>. When asked to authorize:
                   <div className="my-1.5 ml-4 p-2.5 rounded-lg bg-amber-950/40 border border-amber-800/60 text-amber-200 text-[11px] space-y-1">
                     <p className="font-semibold text-amber-300">⚠️ If Google says "Google hasn't verified this app":</p>
@@ -187,7 +198,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <p className="text-slate-400 text-[10px] italic">(Google shows this for all personal scripts that access sheets. It is your own private script running on your own account.)</p>
                   </div>
                 </li>
-                <li>Copy the Web app URL (ends in <code className="text-amber-300">/exec</code>), paste it into the field below, and click <strong className="text-slate-200">Save Configuration</strong>!</li>
+                <li>Copy the Web app URL (ends in <code className="text-amber-300">/exec</code>), paste it and the token into the fields below, and click <strong className="text-slate-200">Save Configuration</strong>!</li>
+                <li className="text-slate-500">Updating the script later? Use <strong className="text-slate-300">Deploy &gt; Manage deployments &gt; Edit &gt; Version: New version</strong> so the URL stays the same.</li>
               </ol>
 
               <div className="flex items-center justify-between pt-2">
@@ -226,7 +238,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <button
                   type="button"
                   onClick={handleTestConnection}
-                  disabled={testingConnection || !webAppUrl.trim()}
+                  disabled={testingConnection || !creds.url || !creds.token}
                   className="px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 flex items-center justify-center gap-1.5 shrink-0 transition-all disabled:opacity-50"
                   title="Test GET/POST ping"
                 >
@@ -241,7 +253,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <button
                   type="button"
                   onClick={handlePullFromSheet}
-                  disabled={pullingCloud || !webAppUrl.trim()}
+                  disabled={pullingCloud || !creds.url || !creds.token}
                   className="px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-800/80 flex items-center justify-center gap-1.5 shrink-0 transition-all disabled:opacity-50"
                   title="Pull all existing totems from Google Sheet"
                 >
@@ -250,6 +262,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </button>
               </div>
             </div>
+          </div>
+
+          {urlLooksInvalid && (
+            <p className="text-[11px] text-amber-300">
+              This doesn't look like a published Web App URL (expected https://script.google.com/macros/s/…/exec).
+            </p>
+          )}
+
+          {/* Bridge Token Input */}
+          <div className="space-y-1.5">
+            <label htmlFor="bridge-token" className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
+              Bridge Token
+            </label>
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <KeyRound className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  id="bridge-token"
+                  type={showToken ? 'text' : 'password'}
+                  value={bridgeToken}
+                  onChange={e => setBridgeToken(e.target.value)}
+                  placeholder="Token printed by setupToken() in Apps Script"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="w-full pl-8 pr-3.5 py-2.5 text-xs rounded-xl bg-slate-950 border border-slate-700 text-white placeholder-slate-600 font-mono focus:outline-none focus:border-toki-500"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowToken(v => !v)}
+                className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
+                aria-label={showToken ? 'Hide token' : 'Show token'}
+              >
+                {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Anyone with both the URL and this token can read and write your log. Treat it like a password.
+            </p>
           </div>
 
           {/* Test Result Message */}
@@ -297,7 +348,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="space-y-0.5">
               <h4 className="text-sm font-bold text-white flex items-center gap-2">
                 <Smartphone className="w-4 h-4 text-toki-400" />
-                <span>Connect Phone (Same Wi-Fi)</span>
+                <span>Connect Phone</span>
               </h4>
               <p className="text-xs text-slate-400">
                 Scan QR code to open Tiki-Toki on your phone with settings pre-configured

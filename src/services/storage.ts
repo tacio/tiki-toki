@@ -1,4 +1,5 @@
-import { TotemEntry, ActiveTimer, AppSettings, Classification } from '../types';
+import type { TotemEntry, ActiveTimer, AppSettings } from '../types';
+import { filterValidEntries } from '../types/guards';
 
 const STORAGE_KEYS = {
   ENTRIES: 'tiki_toki_entries_v1',
@@ -8,6 +9,7 @@ const STORAGE_KEYS = {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   googleWebAppUrl: '',
+  googleBridgeToken: '',
   autoSync: true,
   syncIntervalMinutes: 5,
   enableShortcuts: true,
@@ -40,7 +42,16 @@ export function loadSettings(): AppSettings {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.SETTINGS);
     if (!raw) return DEFAULT_SETTINGS;
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return DEFAULT_SETTINGS;
+    const merged: AppSettings = { ...DEFAULT_SETTINGS, ...(parsed as Partial<AppSettings>) };
+    // Coerce fields that drive network calls / timers to safe types.
+    if (typeof merged.googleWebAppUrl !== 'string') merged.googleWebAppUrl = '';
+    if (typeof merged.googleBridgeToken !== 'string') merged.googleBridgeToken = '';
+    if (typeof merged.syncIntervalMinutes !== 'number' || !Number.isFinite(merged.syncIntervalMinutes) || merged.syncIntervalMinutes < 0) {
+      merged.syncIntervalMinutes = DEFAULT_SETTINGS.syncIntervalMinutes;
+    }
+    return merged;
   } catch (e) {
     console.error('Error loading settings', e);
     return DEFAULT_SETTINGS;
@@ -63,7 +74,7 @@ export function loadEntries(): TotemEntry[] {
       saveEntries(seed);
       return seed;
     }
-    return JSON.parse(raw);
+    return filterValidEntries(JSON.parse(raw), 'localStorage');
   } catch (e) {
     console.error('Error loading entries', e);
     return [];
@@ -101,27 +112,41 @@ export function saveActiveTimer(timer: ActiveTimer | null): void {
   }
 }
 
+/**
+ * Quote a CSV cell and neutralise spreadsheet formula injection
+ * (cells starting with = + - @ tab or CR are prefixed with an apostrophe).
+ */
+export function csvCell(value: string | number): string {
+  let text = String(value);
+  if (typeof value === 'string' && /^[=+\-@\t\r]/.test(text)) {
+    text = "'" + text;
+  }
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 export function exportEntriesToCSV(entries: TotemEntry[]): string {
   const headers = ['ID', 'Date', 'Start Time', 'End Time', 'Duration (min)', 'Classification', 'Activity', 'Tags', 'Mode', 'Sync Status', 'Notes'];
-  const rows = entries.map(e => [
-    `"${e.id}"`,
-    `"${new Date(e.startTime).toLocaleDateString()}"`,
-    `"${new Date(e.startTime).toLocaleTimeString()}"`,
-    `"${new Date(e.endTime).toLocaleTimeString()}"`,
-    e.durationMinutes.toFixed(1),
-    `"${e.classification}"`,
-    `"${(e.title || '').replace(/"/g, '""')}"`,
-    `"${(e.tags || []).join(';')}"`,
-    `"${e.mode}"`,
-    `"${e.syncStatus}"`,
-    `"${(e.notes || '').replace(/"/g, '""')}"`,
-  ]);
+  const rows = entries
+    .filter(e => !e.deleted)
+    .map(e => [
+      csvCell(e.id),
+      csvCell(new Date(e.startTime).toLocaleDateString()),
+      csvCell(new Date(e.startTime).toLocaleTimeString()),
+      csvCell(new Date(e.endTime).toLocaleTimeString()),
+      e.durationMinutes.toFixed(1),
+      csvCell(e.classification),
+      csvCell(e.title || ''),
+      csvCell((e.tags || []).join(';')),
+      csvCell(e.mode),
+      csvCell(e.syncStatus),
+      csvCell(e.notes || ''),
+    ]);
 
   return [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
 }
 
 export function exportEntriesToJSON(entries: TotemEntry[]): string {
-  return JSON.stringify(entries, null, 2);
+  return JSON.stringify(entries.filter(e => !e.deleted), null, 2);
 }
 
 export function parseTags(text: string): { cleanText: string; tags: string[] } {

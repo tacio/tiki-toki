@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
-import { TotemEntry, ActiveTimer, AppSettings, Classification, TotemMode } from '../types';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import type { TotemEntry, ActiveTimer, AppSettings, Classification } from '../types';
 import {
   loadEntries,
   saveEntries,
@@ -7,11 +7,27 @@ import {
   saveActiveTimer,
   loadSettings,
   saveSettings,
-  parseTags
+  parseTags,
 } from '../services/storage';
-import { syncEntriesToGoogleSheets, pullEntriesFromGoogleSheets } from '../services/googleSheets';
+import {
+  syncEntriesToGoogleSheets,
+  pullEntriesFromGoogleSheets,
+  isValidWebAppUrl,
+  type BridgeCredentials,
+} from '../services/googleSheets';
+import { mergeEntries } from '../services/merge';
+
+export const AUTO_SYNC_DEBOUNCE_MS = 1500;
+const SEED_PREFIX = 'seed-totem-';
+
+/** A sheet connection offered by a `?syncUrl=…#t=…` link, awaiting user confirmation. */
+export interface PendingImport {
+  url: string;
+  token: string;
+}
 
 interface TimeTrackerContextType {
+  /** Visible entries (tombstones excluded). */
   entries: TotemEntry[];
   activeTimer: ActiveTimer | null;
   settings: AppSettings;
@@ -20,6 +36,7 @@ interface TimeTrackerContextType {
   lastSyncedTimestamp: string | null;
   pendingSyncCount: number;
   currentElapsedMs: number;
+  pendingImport: PendingImport | null;
   startTimer: (title: string, classification: Classification, tags?: string[]) => void;
   pauseTimer: () => void;
   resumeTimer: () => void;
@@ -37,194 +54,229 @@ interface TimeTrackerContextType {
   quickCaptureSink: (title: string, durationMinutes: number, tags?: string[]) => TotemEntry;
   deleteEntry: (id: string) => void;
   updateEntry: (id: string, updates: Partial<TotemEntry>) => void;
-  triggerSync: () => Promise<void>;
-  pullFromSheet: (customUrl?: string) => Promise<void>;
+  triggerSync: (options?: { pull?: boolean }) => Promise<void>;
+  pullFromSheet: (custom?: BridgeCredentials) => Promise<void>;
   updateAppSettings: (newSettings: AppSettings) => void;
+  acceptImport: () => void;
+  rejectImport: () => void;
 }
 
 const TimeTrackerContext = createContext<TimeTrackerContextType | undefined>(undefined);
 
+const nowIso = () => new Date().toISOString();
+const newId = (prefix: string) => prefix + Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
+const isPushable = (e: TotemEntry) => e.syncStatus !== 'synced' && !e.id.startsWith(SEED_PREFIX);
+
+/** Read a `?syncUrl=<url>#t=<token>` hand-off link and strip it from the address bar. */
+function readImportFromLocation(): PendingImport | null {
+  const params = new URLSearchParams(window.location.search);
+  const syncUrl = params.get('syncUrl');
+  if (!syncUrl) return null;
+
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const token = hash.get('t') || '';
+
+  // Remove the secret-bearing parts from the URL/history straight away.
+  window.history.replaceState({}, document.title, window.location.pathname);
+
+  if (!isValidWebAppUrl(syncUrl)) {
+    console.warn('[tiki-toki] Ignoring syncUrl link: not a valid Apps Script /exec URL');
+    return null;
+  }
+  return { url: syncUrl, token };
+}
+
 export const TimeTrackerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [entries, setEntries] = useState<TotemEntry[]>(() => loadEntries());
+  const [allEntries, setEntries] = useState<TotemEntry[]>(() => loadEntries());
   const [activeTimer, setActiveTimer] = useState<ActiveTimer | null>(() => loadActiveTimer());
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [lastSyncedTimestamp, setLastSyncedTimestamp] = useState<string | null>(null);
   const [currentElapsedMs, setCurrentElapsedMs] = useState<number>(0);
+  const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
 
-  // Keep LocalStorage in sync whenever entries or activeTimer change
-  useEffect(() => {
-    saveEntries(entries);
-  }, [entries]);
+  // Always-current views for async callbacks (avoids stale closures in timers).
+  const entriesRef = useRef(allEntries);
+  entriesRef.current = allEntries;
+  const syncingRef = useRef(false);
 
-  useEffect(() => {
-    saveActiveTimer(activeTimer);
-  }, [activeTimer]);
+  const creds = useMemo<BridgeCredentials>(
+    () => ({ url: settings.googleWebAppUrl, token: settings.googleBridgeToken }),
+    [settings.googleWebAppUrl, settings.googleBridgeToken]
+  );
+  const isConfigured = Boolean(creds.url && creds.token);
 
-  useEffect(() => {
-    saveSettings(settings);
-  }, [settings]);
+  // Persist to localStorage
+  useEffect(() => saveEntries(allEntries), [allEntries]);
+  useEffect(() => saveActiveTimer(activeTimer), [activeTimer]);
+  useEffect(() => saveSettings(settings), [settings]);
 
-  // Live timer tick ticker
+  // Live timer tick
   useEffect(() => {
     if (!activeTimer) {
       setCurrentElapsedMs(0);
       return;
     }
-
     const updateTimer = () => {
-      const now = Date.now();
-      if (activeTimer.isPaused) {
-        const pauseTime = activeTimer.pausedAt || now;
-        const elapsed = pauseTime - activeTimer.startTimestamp - activeTimer.accumulatedPausedMs;
-        setCurrentElapsedMs(Math.max(0, elapsed));
-      } else {
-        const elapsed = now - activeTimer.startTimestamp - activeTimer.accumulatedPausedMs;
-        setCurrentElapsedMs(Math.max(0, elapsed));
-      }
+      const end = activeTimer.isPaused ? activeTimer.pausedAt || Date.now() : Date.now();
+      setCurrentElapsedMs(Math.max(0, end - activeTimer.startTimestamp - activeTimer.accumulatedPausedMs));
     };
-
     updateTimer();
     const interval = setInterval(updateTimer, 500);
     return () => clearInterval(interval);
   }, [activeTimer]);
 
-  // Count entries not yet synced
-  const pendingSyncCount = useMemo(() => {
-    return entries.filter(e => e.syncStatus !== 'synced').length;
-  }, [entries]);
+  const entries = useMemo(() => allEntries.filter(e => !e.deleted), [allEntries]);
+  const pendingSyncCount = useMemo(() => allEntries.filter(isPushable).length, [allEntries]);
 
-  // Pull existing entries from Google Sheets
-  const pullFromSheet = useCallback(async (customUrl?: string) => {
-    const targetUrl = customUrl || settings.googleWebAppUrl;
-    if (!targetUrl) return;
+  // ---- Sync primitives -------------------------------------------------------
 
+  const doPull = useCallback(async (target: BridgeCredentials): Promise<boolean> => {
+    const res = await pullEntriesFromGoogleSheets(target);
+    if (!res.success) {
+      setSyncError(res.message || 'Failed to pull from Google Sheet');
+      return false;
+    }
+    if (res.entries.length > 0) {
+      setEntries(prev => mergeEntries(prev, res.entries));
+    }
+    setLastSyncedTimestamp(nowIso());
+    return true;
+  }, []);
+
+  const doPush = useCallback(async (target: BridgeCredentials): Promise<boolean> => {
+    const snapshot = entriesRef.current.filter(isPushable);
+    if (snapshot.length === 0) return true;
+
+    const versions = new Map(snapshot.map(e => [e.id, e.updatedAt]));
+    const result = await syncEntriesToGoogleSheets(target, snapshot);
+    // Only touch entries that were not edited while the request was in flight.
+    const unchangedSince = (item: TotemEntry) => versions.has(item.id) && versions.get(item.id) === item.updatedAt;
+
+    if (result.success) {
+      const synced = new Set(result.syncedIds);
+      const at = nowIso();
+      setEntries(prev =>
+        prev.flatMap(item => {
+          if (!synced.has(item.id) || !unchangedSince(item)) return [item];
+          if (item.deleted) return []; // tombstone delivered; drop it locally
+          return [{ ...item, syncStatus: 'synced' as const, lastSyncedAt: at }];
+        })
+      );
+      setLastSyncedTimestamp(at);
+      return true;
+    }
+
+    setSyncError(result.error || 'Sync failed');
+    setEntries(prev =>
+      prev.map(item => (unchangedSince(item) && item.syncStatus !== 'synced' ? { ...item, syncStatus: 'failed' as const } : item))
+    );
+    return false;
+  }, []);
+
+  const runExclusive = useCallback(async (work: () => Promise<unknown>) => {
+    if (syncingRef.current) return;
+    syncingRef.current = true;
     setIsSyncing(true);
     setSyncError(null);
+    try {
+      await work();
+    } finally {
+      syncingRef.current = false;
+      setIsSyncing(false);
+    }
+  }, []);
 
-    const res = await pullEntriesFromGoogleSheets(targetUrl);
-    setIsSyncing(false);
+  const pullFromSheet = useCallback(
+    async (custom?: BridgeCredentials) => {
+      const target = custom || creds;
+      if (!target.url) return;
+      await runExclusive(() => doPull(target));
+    },
+    [creds, runExclusive, doPull]
+  );
 
-    if (res.success && res.entries.length > 0) {
-      setEntries(prev => {
-        // If local has only seed entries, replace them with real sheet entries
-        const isFresh = prev.length === 0 || prev.every(e => e.id.startsWith('seed-totem-'));
-        if (isFresh) {
-          return res.entries;
-        }
-
-        // Merge: keep local, add sheet entries if not already present
-        const localIds = new Set(prev.map(e => e.id));
-        const newFromSheet = res.entries.filter(e => !localIds.has(e.id));
-        return [...newFromSheet, ...prev];
+  /** Push pending local changes, then (by default) pull changes made on other devices. */
+  const triggerSync = useCallback(
+    async ({ pull = true }: { pull?: boolean } = {}) => {
+      if (!isConfigured) {
+        setSyncError('Google Sheets is not configured. Add the Web App URL and bridge token in Settings.');
+        return;
+      }
+      await runExclusive(async () => {
+        const pushed = await doPush(creds);
+        if (pushed && pull) await doPull(creds);
       });
-      setLastSyncedTimestamp(new Date().toISOString());
-    } else if (!res.success && res.message) {
-      setSyncError(res.message);
-    }
-  }, [settings.googleWebAppUrl]);
+    },
+    [isConfigured, creds, runExclusive, doPush, doPull]
+  );
 
-  // Sync pending local entries to Google Sheets
-  const triggerSync = useCallback(async () => {
-    if (!settings.googleWebAppUrl) {
-      setSyncError('Google Sheets Web App URL is not configured. Add it in Settings.');
-      return;
-    }
+  const triggerSyncRef = useRef(triggerSync);
+  triggerSyncRef.current = triggerSync;
 
-    const toSync = entries.filter(e => e.syncStatus !== 'synced');
-    if (toSync.length === 0) {
-      // Nothing pending to push, but let's do a pull to fetch anything from other devices
-      pullFromSheet();
-      return;
-    }
+  // Debounced auto-push whenever there are fresh local changes.
+  const hasFreshLocalChanges = useMemo(
+    () => allEntries.some(e => e.syncStatus === 'local' && !e.id.startsWith(SEED_PREFIX)),
+    [allEntries]
+  );
+  useEffect(() => {
+    if (!settings.autoSync || !isConfigured || !hasFreshLocalChanges) return;
+    const t = setTimeout(() => void triggerSyncRef.current({ pull: false }), AUTO_SYNC_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [allEntries, settings.autoSync, isConfigured, hasFreshLocalChanges]);
 
-    setIsSyncing(true);
-    setSyncError(null);
+  // Periodic two-way sync (also retries failed pushes).
+  useEffect(() => {
+    const minutes = settings.syncIntervalMinutes;
+    if (!settings.autoSync || !isConfigured || !(minutes > 0)) return;
+    const id = setInterval(() => void triggerSyncRef.current(), minutes * 60_000);
+    return () => clearInterval(id);
+  }, [settings.autoSync, settings.syncIntervalMinutes, isConfigured]);
 
-    const result = await syncEntriesToGoogleSheets(settings.googleWebAppUrl, toSync);
-
-    setIsSyncing(false);
-    if (result.success && result.syncedIds.length > 0) {
-      const syncedSet = new Set(result.syncedIds);
-      const nowIso = new Date().toISOString();
-      setEntries(prev =>
-        prev.map(item =>
-          syncedSet.has(item.id)
-            ? { ...item, syncStatus: 'synced', lastSyncedAt: nowIso }
-            : item
-        )
-      );
-      setLastSyncedTimestamp(nowIso);
-    } else if (!result.success) {
-      setSyncError(result.error || 'Sync failed');
-      setEntries(prev =>
-        prev.map(item =>
-          toSync.some(ts => ts.id === item.id)
-            ? { ...item, syncStatus: 'failed' }
-            : item
-        )
-      );
-    }
-  }, [entries, settings.googleWebAppUrl, pullFromSheet]);
-
-  // Auto-import settings & pull if URL has ?syncUrl=...
+  // Hand-off links (QR code) are never applied silently: they need explicit confirmation.
   useEffect(() => {
     try {
-      const params = new URLSearchParams(window.location.search);
-      const urlParam = params.get('syncUrl');
-      if (urlParam && urlParam.startsWith('https://script.google.com/macros/s/')) {
-        const decoded = decodeURIComponent(urlParam);
-        setSettings(prev => {
-          const updated = { ...prev, googleWebAppUrl: decoded };
-          saveSettings(updated);
-          return updated;
-        });
-
-        // Clean the query string without reloading page
-        window.history.replaceState({}, document.title, window.location.pathname);
-
-        // Pull entries from Google Sheet immediately
-        pullFromSheet(decoded);
-      }
+      const offer = readImportFromLocation();
+      if (offer) setPendingImport(offer);
     } catch (e) {
-      console.error('Error reading syncUrl param', e);
+      console.error('Error reading syncUrl link', e);
     }
-  }, [pullFromSheet]);
+  }, []);
 
-  // Auto-sync after changes if enabled
-  const scheduleAutoSync = useCallback(() => {
-    if (settings.autoSync && settings.googleWebAppUrl) {
-      setTimeout(() => {
-        triggerSync();
-      }, 1500); // 1.5s debounce
-    }
-  }, [settings.autoSync, settings.googleWebAppUrl, triggerSync]);
+  const acceptImport = useCallback(() => {
+    if (!pendingImport) return;
+    const offer = pendingImport;
+    setPendingImport(null);
+    setSettings(prev => ({
+      ...prev,
+      googleWebAppUrl: offer.url,
+      googleBridgeToken: offer.token || prev.googleBridgeToken,
+    }));
+    const token = offer.token || settings.googleBridgeToken;
+    if (token) void pullFromSheet({ url: offer.url, token });
+  }, [pendingImport, pullFromSheet, settings.googleBridgeToken]);
+
+  const rejectImport = useCallback(() => setPendingImport(null), []);
+
+  // ---- Timer & entry mutations -----------------------------------------------
 
   const startTimer = (rawTitle: string, classification: Classification, explicitTags: string[] = []) => {
     const { cleanText, tags: parsedTags } = parseTags(rawTitle);
-    const combinedTags = Array.from(new Set([...explicitTags, ...parsedTags]));
-
-    const timer: ActiveTimer = {
-      id: 'totem-' + Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
+    setActiveTimer({
+      id: newId('totem-'),
       title: cleanText || 'Unspecified Totem',
       classification,
-      tags: combinedTags,
+      tags: Array.from(new Set([...explicitTags, ...parsedTags])),
       startTimestamp: Date.now(),
       isPaused: false,
       accumulatedPausedMs: 0,
-    };
-
-    setActiveTimer(timer);
+    });
   };
 
   const pauseTimer = () => {
     if (!activeTimer || activeTimer.isPaused) return;
-    setActiveTimer({
-      ...activeTimer,
-      isPaused: true,
-      pausedAt: Date.now(),
-    });
+    setActiveTimer({ ...activeTimer, isPaused: true, pausedAt: Date.now() });
   };
 
   const resumeTimer = () => {
@@ -242,38 +294,30 @@ export const TimeTrackerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!activeTimer) return null;
 
     const now = Date.now();
-    let totalElapsedMs = now - activeTimer.startTimestamp - activeTimer.accumulatedPausedMs;
-    if (activeTimer.isPaused && activeTimer.pausedAt) {
-      totalElapsedMs = activeTimer.pausedAt - activeTimer.startTimestamp - activeTimer.accumulatedPausedMs;
-    }
-
-    const durationMinutes = Math.max(1, Math.round(totalElapsedMs / 60000));
-    const startTimeIso = new Date(activeTimer.startTimestamp).toISOString();
-    const endTimeIso = new Date(now).toISOString();
+    const end = activeTimer.isPaused && activeTimer.pausedAt ? activeTimer.pausedAt : now;
+    const totalElapsedMs = end - activeTimer.startTimestamp - activeTimer.accumulatedPausedMs;
 
     const titleToUse = customTitle?.trim() || activeTimer.title;
     const { cleanText, tags: parsedTags } = parseTags(titleToUse);
-    const combinedTags = Array.from(new Set([...activeTimer.tags, ...parsedTags]));
 
     const newEntry: TotemEntry = {
       id: activeTimer.id,
       title: cleanText || 'Untitled Totem',
       classification: activeTimer.classification,
-      tags: combinedTags,
-      startTime: startTimeIso,
-      endTime: endTimeIso,
-      durationMinutes,
+      tags: Array.from(new Set([...activeTimer.tags, ...parsedTags])),
+      startTime: new Date(activeTimer.startTimestamp).toISOString(),
+      endTime: new Date(now).toISOString(),
+      durationMinutes: Math.max(1, Math.round(totalElapsedMs / 60000)),
       mode: 'live',
       syncStatus: 'local',
       lastSyncedAt: null,
       notes: notes || undefined,
+      updatedAt: new Date(now).toISOString(),
     };
 
     setEntries(prev => [newEntry, ...prev]);
     setActiveTimer(null);
     setCurrentElapsedMs(0);
-
-    scheduleAutoSync();
     return newEntry;
   };
 
@@ -282,29 +326,19 @@ export const TimeTrackerProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setCurrentElapsedMs(0);
   };
 
-  const addRetroactiveEntry = (data: {
-    title: string;
-    classification: Classification;
-    durationMinutes: number;
-    startTime?: string;
-    endTime?: string;
-    tags?: string[];
-    notes?: string;
-  }): TotemEntry => {
-    const now = new Date();
-    const end = data.endTime ? new Date(data.endTime) : now;
+  const addRetroactiveEntry: TimeTrackerContextType['addRetroactiveEntry'] = data => {
+    const end = data.endTime ? new Date(data.endTime) : new Date();
     const start = data.startTime
       ? new Date(data.startTime)
       : new Date(end.getTime() - data.durationMinutes * 60 * 1000);
 
     const { cleanText, tags: parsedTags } = parseTags(data.title);
-    const combinedTags = Array.from(new Set([...(data.tags || []), ...parsedTags]));
 
     const newEntry: TotemEntry = {
-      id: 'retro-' + Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
+      id: newId('retro-'),
       title: cleanText || 'Retroactive Log',
       classification: data.classification,
-      tags: combinedTags,
+      tags: Array.from(new Set([...(data.tags || []), ...parsedTags])),
       startTime: start.toISOString(),
       endTime: end.toISOString(),
       durationMinutes: Math.max(1, Math.round(data.durationMinutes)),
@@ -312,37 +346,35 @@ export const TimeTrackerProvider: React.FC<{ children: React.ReactNode }> = ({ c
       syncStatus: 'local',
       lastSyncedAt: null,
       notes: data.notes,
+      updatedAt: nowIso(),
     };
 
     setEntries(prev => [newEntry, ...prev]);
-    scheduleAutoSync();
     return newEntry;
   };
 
-  const quickCaptureSink = (title: string, durationMinutes: number, tags: string[] = ['sink']): TotemEntry => {
-    return addRetroactiveEntry({
-      title,
-      classification: 'sink',
-      durationMinutes,
-      tags,
-      notes: 'Quick captured time sink',
-    });
-  };
+  const quickCaptureSink = (title: string, durationMinutes: number, tags: string[] = ['sink']): TotemEntry =>
+    addRetroactiveEntry({ title, classification: 'sink', durationMinutes, tags, notes: 'Quick captured time sink' });
 
   const deleteEntry = (id: string) => {
-    setEntries(prev => prev.filter(e => e.id !== id));
+    const at = nowIso();
+    setEntries(prev =>
+      prev.flatMap(e => {
+        if (e.id !== id) return [e];
+        const neverLeftDevice = e.syncStatus === 'local' && e.lastSyncedAt === null && !syncingRef.current;
+        if (neverLeftDevice || e.id.startsWith(SEED_PREFIX)) return [];
+        // Keep a tombstone so the deletion reaches the sheet and other devices.
+        return [{ ...e, deleted: true, syncStatus: 'local' as const, updatedAt: at }];
+      })
+    );
   };
 
   const updateEntry = (id: string, updates: Partial<TotemEntry>) => {
-    setEntries(prev =>
-      prev.map(e => (e.id === id ? { ...e, ...updates, syncStatus: 'local' } : e))
-    );
-    scheduleAutoSync();
+    const at = nowIso();
+    setEntries(prev => prev.map(e => (e.id === id ? { ...e, ...updates, syncStatus: 'local', updatedAt: at } : e)));
   };
 
-  const updateAppSettings = (newSettings: AppSettings) => {
-    setSettings(newSettings);
-  };
+  const updateAppSettings = (newSettings: AppSettings) => setSettings(newSettings);
 
   return (
     <TimeTrackerContext.Provider
@@ -355,6 +387,7 @@ export const TimeTrackerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         lastSyncedTimestamp,
         pendingSyncCount,
         currentElapsedMs,
+        pendingImport,
         startTimer,
         pauseTimer,
         resumeTimer,
@@ -367,6 +400,8 @@ export const TimeTrackerProvider: React.FC<{ children: React.ReactNode }> = ({ c
         triggerSync,
         pullFromSheet,
         updateAppSettings,
+        acceptImport,
+        rejectImport,
       }}
     >
       {children}

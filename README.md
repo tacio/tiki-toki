@@ -55,12 +55,31 @@
 # Install dependencies
 npm install
 
-# Start the dev server (accessible from your phone on LAN)
+# Start the dev server (localhost only)
 npm run dev
+
+# Or expose it on your LAN for quick phone testing (plain HTTP, trusted networks only)
+npm run dev:lan
 ```
 
-Open `http://localhost:5173` in your browser.
-To access it on your phone, open `http://<YOUR_LOCAL_IP>:5173` while on the same Wi-Fi network.
+Open `http://localhost:5173` in your browser. For day-to-day phone use, prefer the deployed HTTPS site (see below): it installs as an offline-capable app.
+
+### 2. Quality checks
+
+```bash
+npm run lint           # ESLint (typescript-eslint + react-hooks)
+npm run typecheck      # tsc
+npm test               # Vitest unit/integration tests
+npm run test:coverage  # same, with coverage thresholds enforced
+npm run test:e2e       # Playwright smoke tests against a production build
+npm run check          # everything except e2e
+```
+
+The Google Apps Script bridge lives in `src/bridge/appsScript.js`. The Settings screen embeds that exact file for copy-paste, and the tests run it against an in-memory emulation of SpreadsheetApp, so the deployed script and the tested script are always the same code.
+
+### 3. Deployment (GitHub Pages)
+
+Pushing to `main` runs `.github/workflows/deploy.yml`. It runs CI (audit, lint, typecheck, tests, build, Playwright) and then publishes `dist/` to GitHub Pages at `https://<user>.github.io/<repo>/`. One-time setup: in **Settings → Pages**, set **Source: GitHub Actions**. Pull requests run CI only.
 
 ---
 
@@ -70,19 +89,29 @@ To access it on your phone, open `http://<YOUR_LOCAL_IP>:5173` while on the same
 2. In the Google Sheets menu, click **Extensions > Apps Script**.
 3. In Tiki-Toki, open **Settings (gear icon)** > click **"1-Min Setup Guide"** > click **"Copy Script Code"**.
 4. Paste the copied code into Google Apps Script and click **Save** (disk icon).
-5. Click **Deploy > New deployment**:
+5. In the function dropdown pick **`setupToken`** and click **Run**. Copy the token printed in the **Execution log**. This is your bridge's shared secret; run it again any time to rotate it.
+6. Click **Deploy > New deployment**:
    * Type: **Web app**
    * Description: `Tiki-Toki Bridge`
    * Execute as: **Me**
-   * Who has access: **Anyone**
-6. Click **Deploy**, then click **Authorize access**.
+   * Who has access: **Anyone** (required for the app to reach it; every request is checked against your token, and `GET` only returns a health check)
+7. Click **Deploy**, then click **Authorize access**.
    > **Note on "Google hasn’t verified this app":**
    > Google displays this standard warning for any private Apps Script you write. Because this is your own script running on your own Google account, it is 100% safe.
    > 1. Click the small **"Advanced"** link (bottom-left of the warning popup).
    > 2. Click **"Go to Tiki-Toki Bridge (unsafe)"** (or "Go to Untitled project (unsafe)").
    > 3. Click **"Allow"**.
-7. Copy the generated Web app URL (ends in `/exec`).
-8. Paste the URL into Tiki-Toki Settings and click **Save Configuration**!
+8. Copy the generated Web app URL (ends in `/exec`).
+9. Paste the URL **and the token** into Tiki-Toki Settings and click **Save Configuration**!
+
+**Upgrading from the v1 (token-less) script:** paste the new script, run `setupToken`, then use **Deploy > Manage deployments > Edit (pencil) > Version: New version > Deploy**. The URL stays the same. Existing rows keep working; four columns (`Start (ISO)`, `End (ISO)`, `Updated At`, `Deleted`) are added automatically.
+
+### Security notes
+
+* Treat the Web App URL + token like a password: together they grant read/write access to your log. Both are stored in this browser's `localStorage`.
+* The **Show QR Code** hand-off link carries the token in the URL `#fragment`, which browsers never send to servers. The app strips it from the address bar on load and **asks before connecting** to any sheet from a link.
+* Text written to the sheet and to CSV exports is forced to plain text, so a title like `=IMPORTXML(...)` can never run as a formula.
+* Production builds ship a strict Content-Security-Policy (`script-src 'self'`; network access only to Google Apps Script).
 
 From then on, every totem and time sink you record will automatically sync to your personal Google Sheet!
 

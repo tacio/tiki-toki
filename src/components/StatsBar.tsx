@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { useTimeTracker } from '../context/TimeTrackerContext';
-import { Flame, Wrench, AlertTriangle, Clock, ShieldCheck, Zap } from 'lucide-react';
+import { Flame, Wrench, AlertTriangle, Clock, Zap } from 'lucide-react';
 
 export const StatsBar: React.FC = () => {
   const { entries } = useTimeTracker();

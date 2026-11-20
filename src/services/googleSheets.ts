@@ -1,402 +1,177 @@
-import { TotemEntry } from '../types';
+import type { TotemEntry } from '../types';
+import { filterValidEntries } from '../types/guards';
+import bridgeSource from '../bridge/appsScript.js?raw';
 
-export const GOOGLE_APPS_SCRIPT_TEMPLATE = `/**
- * Tiki-Toki 時 — Google Sheets Integration Bridge
- * 
- * Instructions:
- * 1. Open your Google Spreadsheet (or create a new one).
- * 2. In the menu, go to: Extensions > Apps Script
- * 3. Replace all code in the editor with this script.
- * 4. Click "Deploy" > "New deployment"
- * 5. Select type: "Web app"
- * 6. Set Description: "Tiki-Toki Bridge"
- * 7. Set "Execute as": "Me"
- * 8. Set "Who has access": "Anyone" (CRITICAL: prevents redirect to login)
- * 9. Click "Deploy", authorize permissions, and copy the Web app URL (ends in /exec).
- * 10. Paste that URL into Tiki-Toki Settings!
- */
+/** The Apps Script the user pastes into their spreadsheet. Same file the bridge tests execute. */
+export const GOOGLE_APPS_SCRIPT_TEMPLATE: string = bridgeSource;
 
-const SHEET_NAME = 'Tiki-Toki Log';
+const WEB_APP_PATH = /^\/(?:a\/macros\/[\w.-]+|macros)\/s\/[\w-]+\/exec$/;
 
-function readSheetEntries(sheet) {
-  const entries = [];
-  if (!sheet) return entries;
-  const lastRow = sheet.getLastRow();
-  if (lastRow <= 1) return entries;
-
-  const data = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
-  for (let i = 0; i < data.length; i++) {
-    const row = data[i];
-    const syncId = String(row[0] || '').trim();
-    if (!syncId) continue;
-
-    const loggedAt = row[10] ? String(row[10]) : new Date().toISOString();
-    const duration = Number(row[4]) || 0;
-
-    entries.push({
-      id: syncId,
-      title: String(row[6] || 'Untitled'),
-      classification: String(row[5] || 'productive').toLowerCase(),
-      tags: row[7] ? String(row[7]).split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [],
-      startTime: loggedAt,
-      endTime: loggedAt,
-      durationMinutes: duration,
-      mode: String(row[8] || 'live'),
-      notes: String(row[9] || ''),
-      syncStatus: 'synced',
-      lastSyncedAt: loggedAt
-    });
-  }
-  return entries;
-}
-
-function doGet(e) {
+/** Strictly validate a deployed Apps Script Web App URL (https, script.google.com, /exec). */
+export function isValidWebAppUrl(raw: string): boolean {
+  let url: URL;
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName(SHEET_NAME);
-    const entries = readSheetEntries(sheet);
+    url = new URL((raw || '').trim());
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === 'https:' &&
+    url.hostname === 'script.google.com' &&
+    url.port === '' &&
+    url.username === '' &&
+    url.password === '' &&
+    WEB_APP_PATH.test(url.pathname)
+  );
+}
 
-    return ContentService.createTextOutput(JSON.stringify({
-      status: 'ok',
-      message: 'Tiki-Toki bridge is live and connected!',
-      sheetTitle: ss.getName(),
-      entries: entries,
-      entriesCount: entries.length,
-      timestamp: new Date().toISOString()
-    })).setMimeType(ContentService.MimeType.JSON);
-  } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({
-      status: 'ok',
-      message: 'Tiki-Toki bridge is live and ready',
-      entries: [],
-      timestamp: new Date().toISOString()
-    })).setMimeType(ContentService.MimeType.JSON);
+export interface BridgeCredentials {
+  url: string;
+  token: string;
+}
+
+type BridgeResponse = Record<string, unknown> & { status?: string; message?: string; code?: string };
+
+class BridgeError extends Error {
+  constructor(message: string, readonly kind: 'timeout' | 'http' | 'network' | 'bridge' | 'config') {
+    super(message);
+    this.name = 'BridgeError';
   }
 }
 
-function doPost(e) {
-  const lock = LockService.getScriptLock();
-  try {
-    lock.waitLock(10000); // 10s wait lock for concurrency safety
-
-    if (!e || !e.postData || !e.postData.contents) {
-      return ContentService.createTextOutput(JSON.stringify({
-        status: 'error',
-        message: 'No payload received in request'
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-
-    const data = JSON.parse(e.postData.contents);
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName(SHEET_NAME);
-
-    // Initialize sheet and headers if not present
-    if (!sheet) {
-      sheet = ss.insertSheet(SHEET_NAME);
-      const headers = [
-        'Sync ID',
-        'Date',
-        'Start Time',
-        'End Time',
-        'Duration (min)',
-        'Classification',
-        'Activity / Time Sink',
-        'Tags',
-        'Mode',
-        'Notes',
-        'Logged At'
-      ];
-      sheet.appendRow(headers);
-      
-      // Style headers
-      const headerRange = sheet.getRange(1, 1, 1, headers.length);
-      headerRange.setBackground('#161d28');
-      headerRange.setFontColor('#ffffff');
-      headerRange.setFontWeight('bold');
-      sheet.setFrozenRows(1);
-    }
-
-    if (data.action === 'ping') {
-      return ContentService.createTextOutput(JSON.stringify({
-        status: 'success',
-        message: 'Tiki-Toki connected successfully!'
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-
-    if (data.action === 'pull_entries') {
-      const entries = readSheetEntries(sheet);
-      return ContentService.createTextOutput(JSON.stringify({
-        status: 'success',
-        entries: entries,
-        entriesCount: entries.length
-      })).setMimeType(ContentService.MimeType.JSON);
-    }
-
-    const entries = data.entries || [];
-    const syncedIds = [];
-
-    // Get existing IDs in column 1 to avoid duplicates
-    const lastRow = sheet.getLastRow();
-    const existingIds = {};
-    if (lastRow > 1) {
-      const idValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
-      for (let i = 0; i < idValues.length; i++) {
-        if (idValues[i][0]) {
-          existingIds[idValues[i][0]] = i + 2; // Row number
-        }
-      }
-    }
-
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      const startDate = new Date(entry.startTime);
-      const endDate = new Date(entry.endTime);
-
-      const rowData = [
-        entry.id,
-        startDate.toLocaleDateString(),
-        startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        Math.round(entry.durationMinutes * 10) / 10,
-        entry.classification,
-        entry.title,
-        (entry.tags || []).join(', '),
-        entry.mode,
-        entry.notes || '',
-        new Date().toISOString()
-      ];
-
-      if (existingIds[entry.id]) {
-        // Update existing row
-        sheet.getRange(existingIds[entry.id], 1, 1, rowData.length).setValues([rowData]);
-      } else {
-        // Append new row
-        sheet.appendRow(rowData);
-      }
-
-      syncedIds.push(entry.id);
-    }
-
-    return ContentService.createTextOutput(JSON.stringify({
-      status: 'success',
-      syncedCount: syncedIds.length,
-      syncedIds: syncedIds
-    })).setMimeType(ContentService.MimeType.JSON);
-
-  } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({
-      status: 'error',
-      message: err.toString()
-    })).setMimeType(ContentService.MimeType.JSON);
-  } finally {
-    try {
-      lock.releaseLock();
-    } catch (e) {
-      // Lock already released or expired
-    }
-  }
-}
-`;
-
-export async function testGoogleSheetsConnection(url: string): Promise<{ success: boolean; message: string }> {
+async function postToBridge(
+  { url, token }: BridgeCredentials,
+  body: Record<string, unknown>,
+  timeoutMs: number
+): Promise<BridgeResponse> {
   const cleanUrl = (url || '').trim();
-
-  if (!cleanUrl || !cleanUrl.startsWith('https://script.google.com/macros/s/')) {
-    return {
-      success: false,
-      message: 'Invalid URL. It must be a Google Apps Script Web App URL starting with https://script.google.com/macros/s/',
-    };
+  if (!isValidWebAppUrl(cleanUrl)) {
+    throw new BridgeError(
+      'Invalid URL. It must be a published Google Apps Script Web App URL (https://script.google.com/macros/s/…/exec).',
+      'config'
+    );
+  }
+  if (!token || !token.trim()) {
+    throw new BridgeError('Bridge token is missing. Run setupToken() in Apps Script and paste the token in Settings.', 'config');
   }
 
-  if (cleanUrl.endsWith('/dev')) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(cleanUrl, {
+      method: 'POST',
+      // text/plain keeps this a CORS "simple request" (no preflight, which Apps Script cannot answer).
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ ...body, token: token.trim() }),
+      redirect: 'follow',
+      credentials: 'omit',
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (controller.signal.aborted) {
+      throw new BridgeError(`Request timed out (${Math.round(timeoutMs / 1000)}s).`, 'timeout');
+    }
+    throw new BridgeError(err instanceof Error ? err.message : 'Network error', 'network');
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
+  if (!response.ok) {
+    throw new BridgeError(`HTTP ${response.status} from Google Apps Script`, 'http');
+  }
+
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    throw new BridgeError(
+      'Google returned a non-JSON page. Check that "Who has access" is set to "Anyone" and that you deployed a new version.',
+      'bridge'
+    );
+  }
+  if (typeof data !== 'object' || data === null) {
+    throw new BridgeError('Unexpected response from bridge', 'bridge');
+  }
+  const res = data as BridgeResponse;
+  if (res.status !== 'success') {
+    throw new BridgeError(typeof res.message === 'string' ? res.message : 'Bridge returned an error', 'bridge');
+  }
+  return res;
+}
+
+function describe(err: unknown): string {
+  if (err instanceof BridgeError && err.kind === 'timeout') {
+    return `${err.message} The most common cause is "Who has access" set to "Only myself" instead of "Anyone", which makes Google redirect to a login page.`;
+  }
+  return err instanceof Error ? err.message : 'Unknown error';
+}
+
+export async function testGoogleSheetsConnection(
+  creds: BridgeCredentials
+): Promise<{ success: boolean; message: string }> {
+  if ((creds.url || '').trim().endsWith('/dev')) {
     return {
       success: false,
       message: 'This is a test URL ending in /dev. You must use the published Web App URL ending in /exec.',
     };
   }
-
-  // 1. Try GET request with an 8-second timeout (tests doGet cleanly without CORS/redirect issues)
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    const response = await fetch(cleanUrl, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (response.ok) {
-      const data = await response.json();
-      if (data.status === 'ok' || data.status === 'success') {
-        const extra = data.sheetTitle ? ` ("${data.sheetTitle}")` : '';
-        return {
-          success: true,
-          message: `Connected to Google Sheets successfully${extra}!`,
-        };
-      }
-    }
-  } catch (getError: any) {
-    // If GET failed with timeout
-    if (getError.name === 'AbortError') {
-      return {
-        success: false,
-        message:
-          'Connection timed out (8s). The most common cause is setting "Who has access" to "Only myself" instead of "Anyone", causing Google to redirect to a login screen. In Apps Script, click Deploy > Manage deployments > Edit > set "Who has access: Anyone".',
-      };
-    }
-
-    // 2. Fallback: try POST ping with an 8-second timeout
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-      const postResponse = await fetch(cleanUrl, {
-        method: 'POST',
-        body: JSON.stringify({ action: 'ping' }),
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8',
-        },
-        redirect: 'follow',
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (postResponse.ok) {
-        const postData = await postResponse.json();
-        return {
-          success: true,
-          message: postData.message || 'Connected to Google Sheets successfully!',
-        };
-      }
-    } catch (postError: any) {
-      // Both failed
-    }
-
-    return {
-      success: false,
-      message: `Could not connect to Google Apps Script (${getError.message || 'Network error'}). Please verify the URL ends in /exec and "Who has access" is set to "Anyone".`,
-    };
+    const res = await postToBridge(creds, { action: 'ping' }, 8000);
+    const extra = typeof res.sheetTitle === 'string' ? ` ("${res.sheetTitle}")` : '';
+    return { success: true, message: `Connected to Google Sheets successfully${extra}!` };
+  } catch (err) {
+    return { success: false, message: describe(err) };
   }
-
-  return {
-    success: false,
-    message: 'Could not verify connection. Please ensure your deployment is published as a Web App.',
-  };
 }
 
 export async function pullEntriesFromGoogleSheets(
-  url: string
+  creds: BridgeCredentials
 ): Promise<{ success: boolean; entries: TotemEntry[]; message?: string }> {
-  const cleanUrl = (url || '').trim();
-  if (!cleanUrl) {
-    return { success: false, entries: [], message: 'No Google Sheets URL configured.' };
-  }
-
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-    const response = await fetch(cleanUrl, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    if (data.status === 'ok' && Array.isArray(data.entries)) {
-      return {
-        success: true,
-        entries: data.entries,
-        message: `Retrieved ${data.entries.length} totems from Google Sheet.`,
-      };
-    }
-
+    const res = await postToBridge(creds, { action: 'pull_entries' }, 10000);
+    const entries = filterValidEntries(res.entries, 'Google Sheets pull');
     return {
       success: true,
-      entries: [],
-      message: 'Connected, but no entries found in the sheet.',
+      entries,
+      message: `Retrieved ${entries.length} totems from Google Sheet.`,
     };
-  } catch (err: any) {
-    return {
-      success: false,
-      entries: [],
-      message: err.message || 'Failed to pull entries from Google Sheet',
-    };
+  } catch (err) {
+    return { success: false, entries: [], message: describe(err) };
   }
 }
 
 export async function syncEntriesToGoogleSheets(
-  url: string,
+  creds: BridgeCredentials,
   entries: TotemEntry[]
 ): Promise<{ success: boolean; syncedIds: string[]; error?: string }> {
-  const cleanUrl = (url || '').trim();
-  if (!cleanUrl || entries.length === 0) {
+  if (entries.length === 0) {
     return { success: true, syncedIds: [] };
   }
-
   try {
-    const payload = JSON.stringify({
-      action: 'sync_entries',
-      entries: entries.map(e => ({
-        id: e.id,
-        title: e.title,
-        classification: e.classification,
-        tags: e.tags,
-        startTime: e.startTime,
-        endTime: e.endTime,
-        durationMinutes: e.durationMinutes,
-        mode: e.mode,
-        notes: e.notes || '',
-      })),
-    });
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-    const response = await fetch(cleanUrl, {
-      method: 'POST',
-      body: payload,
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8',
+    const res = await postToBridge(
+      creds,
+      {
+        action: 'sync_entries',
+        entries: entries.map(e => ({
+          id: e.id,
+          title: e.title,
+          classification: e.classification,
+          tags: e.tags,
+          startTime: e.startTime,
+          endTime: e.endTime,
+          durationMinutes: e.durationMinutes,
+          mode: e.mode,
+          notes: e.notes || '',
+          updatedAt: e.updatedAt,
+          deleted: e.deleted === true,
+        })),
       },
-      redirect: 'follow',
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: Failed to reach Google Sheets`);
-    }
-
-    const data = await response.json();
-    if (data.status === 'success' && Array.isArray(data.syncedIds)) {
-      return { success: true, syncedIds: data.syncedIds };
-    } else {
-      return {
-        success: false,
-        syncedIds: [],
-        error: data.message || 'Failed to sync with Google Sheet',
-      };
-    }
-  } catch (err: any) {
-    if (err.name === 'AbortError') {
-      return {
-        success: false,
-        syncedIds: [],
-        error: 'Sync timed out (15s). Please check your connection or Apps Script deployment.',
-      };
-    }
-    return {
-      success: false,
-      syncedIds: [],
-      error: err.message || 'Network error syncing with Google Sheet',
-    };
+      15000
+    );
+    const syncedIds = Array.isArray(res.syncedIds) ? res.syncedIds.filter((id): id is string => typeof id === 'string') : [];
+    return { success: true, syncedIds };
+  } catch (err) {
+    return { success: false, syncedIds: [], error: describe(err) };
   }
 }

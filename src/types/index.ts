@@ -16,6 +16,8 @@ export interface TotemEntry {
   syncStatus: SyncStatus;     // Sync status with Google Sheets
   lastSyncedAt: string | null;// ISO string of when it was sent
   notes?: string;             // Optional reflection or details
+  updatedAt?: string;         // ISO string of last local/remote modification (last-writer-wins merge)
+  deleted?: boolean;          // Tombstone: deleted locally, deletion must propagate to the sheet
 }
 
 export interface ActiveTimer {
@@ -31,6 +33,7 @@ export interface ActiveTimer {
 
 export interface AppSettings {
   googleWebAppUrl: string;    // Deployed Google Apps Script URL
+  googleBridgeToken: string;  // Shared secret checked by the Apps Script bridge
   autoSync: boolean;          // Whether to push automatically when an entry is added
   syncIntervalMinutes: number;// Periodic auto-sync interval (0 for manual or on-event only)
   enableShortcuts: boolean;   // Enable keyboard shortcuts

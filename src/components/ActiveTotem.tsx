@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { useTimeTracker } from '../context/TimeTrackerContext';
 import { Classification } from '../types';
 import { Play, Pause, CheckCircle2, XCircle, Sparkles, Flame, Wrench, AlertTriangle, Tag } from 'lucide-react';

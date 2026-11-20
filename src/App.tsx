@@ -8,6 +8,7 @@ import { TheRiver } from './components/TheRiver';
 import { RetroactiveModal } from './components/RetroactiveModal';
 import { SettingsModal } from './components/SettingsModal';
 import { MobileConnectModal } from './components/MobileConnectModal';
+import { ImportConfirmBanner } from './components/ImportConfirmBanner';
 
 const AppContent: React.FC = () => {
   const { activeTimer, pauseTimer, resumeTimer, stopAndSaveTimer } = useTimeTracker();
@@ -75,6 +76,8 @@ const AppContent: React.FC = () => {
         onOpenRetroactive={() => setIsRetroactiveOpen(true)}
         onOpenMobileConnect={() => setIsMobileConnectOpen(true)}
       />
+
+      <ImportConfirmBanner />
 
       {/* Main Body */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-6 sm:px-6 space-y-6">
